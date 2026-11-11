@@ -6,18 +6,6 @@ from sqlalchemy import text
 
 import re
 
-
-
-
-
-# =========================================================
-
-# CONFIGURATION
-
-# =========================================================
-
-
-
 SKILL_CONFIG = {
 
           # Main/public exam gets highest priority
@@ -27,14 +15,6 @@ SKILL_CONFIG = {
           "other_exam_weight": 0.70,
 
           "normal_internal_weight": 0.40,
-
-
-
-          "competency_min": 1,
-
-          "competency_max": 3,
-
-
 
           "grade_map": {
 
@@ -48,35 +28,40 @@ SKILL_CONFIG = {
 
           },
 
-
-
-          # Contribution of different evidence types
-
+          # Contribution of scored evidence types.
+          # Weights are normalized across sources available for each skill.
           "source_weights": {
+                    "academic_marks": 0.35,
+                    "achievements": 0.50,
+                    "co_scholastic": 0.15
+          },
 
-                    "academic_marks": 0.40,
+          # Achievement level importance
+          "achievement_level_weights": {
+                    "international": 1.00,
+                    "national": 0.90,
+                    "state": 0.80,
+                    "district": 0.65,
+                    "school": 0.50,
+                    "class": 0.35
+          },
 
-                    "competency_assessment": 0.30,
-
-                    "co_scholastic": 0.15,
-
-                    "homework": 0.15
-
+          # Achievement position score (0-100)
+          "achievement_position_scores": {
+                    "1st prize": 100,
+                    "2nd prize": 85,
+                    "3rd prize": 70,
+                    "participant": 40,
+                    "other": 25
           }
 
 }
-
-
-
-
 
 # =========================================================
 
 # HELPERS
 
 # =========================================================
-
-
 
 def safe_float(value):
 
@@ -94,17 +79,9 @@ def safe_float(value):
 
                     return None
 
-
-
-
-
 def round_value(value):
 
           return round(value, 2) if value is not None else None
-
-
-
-
 
 def average(values):
 
@@ -113,10 +90,6 @@ def average(values):
           valid = [v for v in valid if v is not None]
 
           return sum(valid) / len(valid) if valid else None
-
-
-
-
 
 def performance_level(score):
 
@@ -138,10 +111,6 @@ def performance_level(score):
 
           return "needs_improvement"
 
-
-
-
-
 def confidence(count):
 
           if count >= 8:
@@ -158,10 +127,6 @@ def confidence(count):
 
           return "insufficient_evidence"
 
-
-
-
-
 def json_safe(value):
 
           if hasattr(value, "isoformat"):
@@ -170,59 +135,19 @@ def json_safe(value):
 
           return value
 
-
-
-
-
-def normalize_rating(value):
-
-          """
-
-          Current competency rating scale: 1 to 3.
-
-          Verify the school's actual assessment rubric.
-
-          """
-
-          number = safe_float(value)
-
-
-
-          if number is None or not 1 <= number <= 3:
-
-                    return None
-
-
-
-          return ((number - 1) / 2) * 100
-
-
-
-
-
 def parse_grade(value):
 
           if value is None:
 
                     return None
 
-
-
           value = str(value).strip().upper()
-
-
 
           if value in SKILL_CONFIG["grade_map"]:
 
                     return SKILL_CONFIG["grade_map"][value]
 
-
-
           return safe_float(value)
-
-
-
-
 
 def assessment_type(exam_id, internal_name):
 
@@ -232,13 +157,9 @@ def assessment_type(exam_id, internal_name):
 
           exam_id exists AND name contains term or main.
 
-
-
           Other exam:
 
           exam_id exists but is not a main/term exam.
-
-
 
           Normal internal:
 
@@ -250,23 +171,13 @@ def assessment_type(exam_id, internal_name):
 
                     return "normal_internal"
 
-
-
           name = str(internal_name or "").strip().lower()
-
-
 
           if re.search(r"\b(term|main)\b", name):
 
                     return "main_public_exam"
 
-
-
           return "other_exam_linked"
-
-
-
-
 
 def get_assessment_weight(category):
 
@@ -279,10 +190,6 @@ def get_assessment_weight(category):
                     "normal_internal": SKILL_CONFIG["normal_internal_weight"]
 
           }.get(category, 0.4)
-
-
-
-
 
 def calculate_trend(records):
 
@@ -310,49 +217,31 @@ def calculate_trend(records):
 
           )
 
-
-
           if len(valid) < 2:
 
                     return "insufficient_history"
-
-
 
           values = [r["score"] for r in valid]
 
           middle = len(values) // 2
 
-
-
           if middle == 0:
 
                     return "insufficient_history"
-
-
 
           first = average(values[:middle])
 
           last = average(values[middle:])
 
-
-
           if last - first >= 5:
 
                     return "improving"
-
-
 
           if first - last >= 5:
 
                     return "declining"
 
-
-
           return "stable"
-
-
-
-
 
 # =========================================================
 
@@ -360,13 +249,9 @@ def calculate_trend(records):
 
 # =========================================================
 
-
-
 def map_subject_to_skills(subject_name):
 
           name = str(subject_name or "").lower()
-
-
 
           mappings = {
 
@@ -542,11 +427,7 @@ def map_subject_to_skills(subject_name):
 
           }
 
-
-
           matched = []
-
-
 
           for keyword, skills in mappings.items():
 
@@ -554,131 +435,7 @@ def map_subject_to_skills(subject_name):
 
                               matched.extend(skills)
 
-
-
           return list(dict.fromkeys(matched)) or ["Subject Knowledge"]
-
-
-
-
-
-# =========================================================
-
-# COMPETENCY MAPPING
-
-# =========================================================
-
-
-
-def map_competency_to_skills(title, indicator):
-
-          value = f"{title or ''} {indicator or ''}".lower()
-
-
-
-          rules = [
-
-                    (
-
-                              ["emotion", "feelings", "self regulation"],
-
-                              ["Emotional Awareness", "Emotional Intelligence"]
-
-                    ),
-
-                    (
-
-                              ["interacts", "kindness", "helpfulness", "peers"],
-
-                              ["Social Interaction", "Empathy", "Collaboration"]
-
-                    ),
-
-                    (
-
-                              ["listens", "converses", "express thoughts", "speaking"],
-
-                              ["Listening Skills", "Verbal Communication"]
-
-                    ),
-
-                    (
-
-                              ["number", "addition", "subtraction", "numeral"],
-
-                              ["Numerical Ability", "Mathematical Reasoning"]
-
-                    ),
-
-                    (
-
-                              ["pattern", "shapes", "geometric"],
-
-                              ["Pattern Recognition", "Logical Reasoning"]
-
-                    ),
-
-                    (
-
-                              ["environment", "curiosity", "observation"],
-
-                              ["Environmental Awareness", "Observation", "Curiosity"]
-
-                    ),
-
-                    (
-
-                              ["balance", "coordination"],
-
-                              ["Physical Coordination", "Balance"]
-
-                    ),
-
-                    (
-
-                              ["hands", "fingers", "motor"],
-
-                              ["Fine Motor Skills", "Manual Dexterity"]
-
-                    ),
-
-                    (
-
-                              ["sensory", "colours", "colors"],
-
-                              ["Sensory Awareness", "Observation"]
-
-                    ),
-
-                    (
-
-                              ["healthy", "hygiene", "self care"],
-
-                              ["Health Awareness", "Self Management"]
-
-                    )
-
-          ]
-
-
-
-          result = []
-
-
-
-          for keywords, skills in rules:
-
-                    if any(word in value for word in keywords):
-
-                              result.extend(skills)
-
-
-
-          return list(dict.fromkeys(result)) or ["General Competency"]
-
-
-
-
 
 # =========================================================
 
@@ -686,49 +443,69 @@ def map_competency_to_skills(title, indicator):
 
 # =========================================================
 
-
-
 def map_co_scholastic_to_skills(area_name):
 
           name = str(area_name or "").lower()
-
-
 
           if "health" in name or "physical" in name:
 
                     return ["Physical Fitness", "Health Awareness"]
 
-
-
           if "art" in name or "colour" in name or "color" in name:
 
                     return ["Creativity", "Artistic Expression"]
-
-
 
           if "music" in name:
 
                     return ["Musical Ability", "Creative Expression"]
 
-
-
           if "robot" in name:
 
                     return ["Technical Creativity", "Problem Solving"]
-
-
 
           if "co-curricular" in name:
 
                     return ["Participation", "Collaboration"]
 
-
-
           return ["Co-Scholastic Development"]
 
+def map_achievement_to_skills(title, description, category):
+          """Infer demonstrated skills from achievement details."""
+          value = f"{title or ''} {description or ''} {category or ''}".lower()
 
+          rules = [
+                    (["coding", "programming", "software", "hackathon", "computer"],
+                     ["Programming", "Problem Solving", "Computational Thinking"]),
+                    (["science", "experiment", "scientific", "innovation"],
+                     ["Scientific Thinking", "Research Ability", "Innovation"]),
+                    (["mathematics", "maths", "numerical"],
+                     ["Mathematical Reasoning", "Logical Reasoning", "Analytical Thinking"]),
+                    (["quiz", "olympiad"],
+                     ["Knowledge Application", "Analytical Thinking", "Problem Solving"]),
+                    (["speech", "debate", "elocution", "oratory"],
+                     ["Public Speaking", "Communication", "Critical Thinking"]),
+                    (["writing", "essay", "literature", "story"],
+                     ["Written Communication", "Creative Writing", "Language Proficiency"]),
+                    (["sports", "football", "cricket", "athletics", "chess"],
+                     ["Sports Skills", "Physical Fitness", "Teamwork", "Strategic Thinking"]),
+                    (["art", "painting", "drawing", "design"],
+                     ["Creativity", "Artistic Expression", "Visual Thinking"]),
+                    (["music", "singing", "dance"],
+                     ["Musical Ability", "Creative Expression", "Performance Skills"]),
+                    (["leadership", "captain", "student leader"],
+                     ["Leadership", "Teamwork", "Decision Making"]),
+                    (["project", "research", "invention"],
+                     ["Research Ability", "Innovation", "Problem Solving"]),
+                    (["environment", "nature", "social service"],
+                     ["Environmental Awareness", "Social Responsibility"])
+          ]
 
+          result = []
+          for keywords, skills in rules:
+                    if any(keyword in value for keyword in keywords):
+                              result.extend(skills)
 
+          return list(dict.fromkeys(result)) or ["General Achievement"]
 
 # =========================================================
 
@@ -736,13 +513,9 @@ def map_co_scholastic_to_skills(area_name):
 
 # =========================================================
 
-
-
 def add_evidence(skill_map, skill_name, category, score,
 
                                             source, evidence, weight=1.0):
-
-
 
           if skill_name not in skill_map:
 
@@ -760,17 +533,11 @@ def add_evidence(skill_map, skill_name, category, score,
 
                     }
 
-
-
           item = skill_map[skill_name]
-
-
 
           item["sources"].add(source)
 
           item["evidence"].append(evidence)
-
-
 
           if score is not None:
 
@@ -784,10 +551,6 @@ def add_evidence(skill_map, skill_name, category, score,
 
                     })
 
-
-
-
-
 def calculate_skill_score(skill):
 
           """
@@ -795,8 +558,6 @@ def calculate_skill_score(skill):
           First calculate a weighted average within each source.
 
           Then combine source averages using configured source weights.
-
-
 
           This prevents subjects with many duplicate mapped skills
 
@@ -806,19 +567,13 @@ def calculate_skill_score(skill):
 
           source_groups = defaultdict(list)
 
-
-
           for item in skill["observations"]:
 
                     source_groups[item["source"]].append(item)
 
-
-
           numerator = 0
 
           denominator = 0
-
-
 
           for source, items in source_groups.items():
 
@@ -830,33 +585,21 @@ def calculate_skill_score(skill):
 
                     )
 
-
-
                     source_weight = SKILL_CONFIG["source_weights"].get(
 
                               source, 0.10
 
                     )
 
-
-
                     numerator += source_score * source_weight
 
                     denominator += source_weight
-
-
 
           if denominator == 0:
 
                     return None
 
-
-
           return numerator / denominator
-
-
-
-
 
 # =========================================================
 
@@ -864,11 +607,7 @@ def calculate_skill_score(skill):
 
 # =========================================================
 
-
-
 def extract_skills_by_student_id(db, student_id):
-
-
 
           try:
 
@@ -878,13 +617,9 @@ def extract_skills_by_student_id(db, student_id):
 
                     raise ValueError("Valid student_id is required")
 
-
-
           if student_id <= 0:
 
                     raise ValueError("Valid student_id is required")
-
-
 
           # -----------------------------------------------------
 
@@ -892,18 +627,21 @@ def extract_skills_by_student_id(db, student_id):
 
           # -----------------------------------------------------
 
-
-
           student = db.execute(text("""
 
                     SELECT
 
                               id,
+
                               school_id,
+
                               class_id,
+
                               full_name,
+
                               date_of_birth,
-                              gender     
+
+                              gender
 
                     FROM students
 
@@ -919,27 +657,19 @@ def extract_skills_by_student_id(db, student_id):
 
           }).mappings().first()
 
-
-
           if not student:
 
                     raise LookupError("Student not found")
 
-
-
           school_id = student["school_id"]
 
           skill_map = {}
-
-
 
           # -----------------------------------------------------
 
           # 2. ACADEMIC MARKS
 
           # -----------------------------------------------------
-
-
 
           academic_rows = db.execute(text("""
 
@@ -953,8 +683,6 @@ def extract_skills_by_student_id(db, student_id):
 
                               m.status AS mark_status,
 
-
-
                               im.id AS internal_id,
 
                               im.subject_id,
@@ -967,27 +695,17 @@ def extract_skills_by_student_id(db, student_id):
 
                               im.date AS assessment_date,
 
-
-
                               sub.subject_name
 
-
-
                     FROM marks m
-
-
 
                     INNER JOIN internal_marks im
 
                               ON im.id = m.internal_id
 
-
-
                     LEFT JOIN subjects sub
 
                               ON sub.id = im.subject_id
-
-
 
                     WHERE m.student_id = :student_id
 
@@ -996,8 +714,6 @@ def extract_skills_by_student_id(db, student_id):
                          AND (im.trash IS NULL OR im.trash = 0)
 
                          AND m.status = 'present'
-
-
 
                     ORDER BY im.date ASC, m.id ASC
 
@@ -1009,38 +725,31 @@ def extract_skills_by_student_id(db, student_id):
 
           }).mappings().all()
 
-
-
           subject_groups = defaultdict(list)
 
           academic_counts = defaultdict(int)
+
           academic_category_scores = defaultdict(list)
 
-
-
           academic_evidence = []
+
           academic_total_obtained = 0.0
+
           academic_total_maximum = 0.0
+
           academic_weighted_score_total = 0.0
+
           academic_total_weight = 0.0
 
-
-
           for row in academic_rows:
-
-
 
                     obtained = safe_float(row["marks_obtained"])
 
                     maximum = safe_float(row["max_marks"])
 
-
-
                     if obtained is None or maximum is None or maximum <= 0:
 
                               continue
-
-
 
                     # Do not allow an invalid result above maximum marks.
 
@@ -1048,13 +757,11 @@ def extract_skills_by_student_id(db, student_id):
 
                               continue
 
-
-
                     percentage = (obtained / maximum) * 100
+
                     academic_total_obtained += obtained
+
                     academic_total_maximum += maximum
-
-
 
                     exam_type = assessment_type(
 
@@ -1064,17 +771,13 @@ def extract_skills_by_student_id(db, student_id):
 
                     )
 
-
-
                     weight = get_assessment_weight(exam_type)
+
                     academic_weighted_score_total += percentage * weight
+
                     academic_total_weight += weight
 
-
-
                     subject_name = row["subject_name"] or "Unknown Subject"
-
-
 
                     evidence = {
 
@@ -1104,21 +807,18 @@ def extract_skills_by_student_id(db, student_id):
 
                     }
 
-
-
                     academic_evidence.append(evidence)
 
-
-
                     academic_counts[exam_type] += 1
+
                     academic_category_scores[exam_type].append(percentage)
-
-
 
                     subject_groups[subject_name].append({
 
                               "score": percentage,
+
                               "obtained": obtained,
+
                               "maximum": maximum,
 
                               "date": row["assessment_date"],
@@ -1128,8 +828,6 @@ def extract_skills_by_student_id(db, student_id):
                               "weight": weight
 
                     })
-
-
 
                     for skill_name in map_subject_to_skills(subject_name):
 
@@ -1151,17 +849,11 @@ def extract_skills_by_student_id(db, student_id):
 
                               )
 
-
-
           # Subject-wise profiles
 
           subject_profiles = []
 
-
-
           for subject_name, records in subject_groups.items():
-
-
 
                     def weighted_average(category=None):
 
@@ -1173,17 +865,11 @@ def extract_skills_by_student_id(db, student_id):
 
                               ]
 
-
-
                               if not selected:
 
                                         return None
 
-
-
                               total_weight = sum(r["weight"] for r in selected)
-
-
 
                               return (
 
@@ -1193,17 +879,22 @@ def extract_skills_by_student_id(db, student_id):
 
                               )
 
-
-
                     subject_profiles.append({
 
                               "subject": subject_name,
+
                               "obtained_marks": round_value(sum(r["obtained"] for r in records)),
+
                               "maximum_marks": round_value(sum(r["maximum"] for r in records)),
+
                               "percentage": round_value(
+
                                   (sum(r["obtained"] for r in records) / sum(r["maximum"] for r in records)) * 100
+
                                   if sum(r["maximum"] for r in records) > 0 else None
+
                               ),
+
                               "average_score": round_value(weighted_average()),
 
                               "main_exam_average": round_value(
@@ -1236,213 +927,11 @@ def extract_skills_by_student_id(db, student_id):
 
                     })
 
-
-
-          # -----------------------------------------------------
-
-          # 3. COMPETENCY ASSESSMENTS
-
-          # -----------------------------------------------------
-
-
-
-          competency_rows = db.execute(text("""
-
-                    SELECT
-
-                              sca.id AS assessment_id,
-
-                              sca.competency_id,
-
-                              c.title AS competency_name,
-
-                              sca.indicator_id,
-
-                              ci.title AS indicator_name,
-
-                              sca.rating,
-
-                              sca.remarks,
-
-                              sca.createdAt AS assessed_at
-
-
-
-                    FROM student_competency_assessments sca
-
-
-
-                    LEFT JOIN competencies c
-
-                              ON c.id = sca.competency_id
-
-
-
-                    LEFT JOIN competency_indicators ci
-
-                              ON ci.id = sca.indicator_id
-
-
-
-                    WHERE sca.student_id = :student_id
-
-                         AND sca.school_id = :school_id
-
-                         AND c.status = 1
-
-                         AND ci.status = 1
-
-
-
-                    ORDER BY sca.createdAt ASC
-
-          """), {
-
-                    "student_id": student_id,
-
-                    "school_id": school_id
-
-          }).mappings().all()
-
-
-
-          competency_groups = defaultdict(list)
-
-
-
-          for row in competency_rows:
-
-
-
-                    score = normalize_rating(row["rating"])
-
-
-
-                    if score is None:
-
-                              continue
-
-
-
-                    competency_name = row["competency_name"] or "Unknown"
-
-                    indicator_name = row["indicator_name"] or "Unknown"
-
-
-
-                    evidence = {
-
-                              "source": "competency_assessment",
-
-                              "assessment_id": row["assessment_id"],
-
-                              "competency_id": row["competency_id"],
-
-                              "competency": competency_name,
-
-                              "indicator_id": row["indicator_id"],
-
-                              "indicator": indicator_name,
-
-                              "original_rating": row["rating"],
-
-                              "normalized_score": round_value(score),
-
-                              "remarks": row["remarks"],
-
-                              "assessed_at": json_safe(row["assessed_at"])
-
-                    }
-
-
-
-                    competency_groups[
-
-                              (row["competency_id"], row["indicator_id"])
-
-                    ].append({
-
-                              "score": score,
-
-                              "date": row["assessed_at"],
-
-                              "evidence": evidence
-
-                    })
-
-
-
-                    for skill_name in map_competency_to_skills(
-
-                              competency_name,
-
-                              indicator_name
-
-                    ):
-
-                              add_evidence(
-
-                                        skill_map,
-
-                                        skill_name,
-
-                                        "Cognitive / Behavioural",
-
-                                        score,
-
-                                        "competency_assessment",
-
-                                        evidence
-
-                              )
-
-
-
-          competency_profiles = []
-
-
-
-          for (competency_id, indicator_id), records in competency_groups.items():
-
-
-
-                    competency_profiles.append({
-
-                              "competency_id": competency_id,
-
-                              "indicator_id": indicator_id,
-
-                              "competency": records[0]["evidence"]["competency"],
-
-                              "indicator": records[0]["evidence"]["indicator"],
-
-                              "average_score": round_value(
-
-                                        average([r["score"] for r in records])
-
-                              ),
-
-                              "assessment_count": len(records),
-
-                              "trend": calculate_trend([
-
-                                        {"score": r["score"], "date": r["date"]}
-
-                                        for r in records
-
-                              ])
-
-                    })
-
-
-
           # -----------------------------------------------------
 
           # 4. HOMEWORK AND ASSIGNMENTS
 
           # -----------------------------------------------------
-
-
 
           homework_rows = db.execute(text("""
 
@@ -1462,8 +951,6 @@ def extract_skills_by_student_id(db, student_id):
 
                               ha.is_seen,
 
-
-
                               h.title,
 
                               h.description,
@@ -1474,31 +961,21 @@ def extract_skills_by_student_id(db, student_id):
 
                               sub.subject_name
 
-
-
                     FROM homework_assignments ha
-
-
 
                     INNER JOIN homeworks h
 
                               ON h.id = ha.homework_id
 
-
-
                     LEFT JOIN subjects sub
 
                               ON sub.id = h.subject_id
-
-
 
                     WHERE ha.student_id = :student_id
 
                          AND h.school_id = :school_id
 
                          AND (h.trash IS NULL OR h.trash = 0)
-
-
 
                     ORDER BY ha.createdAt ASC
 
@@ -1510,46 +987,65 @@ def extract_skills_by_student_id(db, student_id):
 
           }).mappings().all()
 
-
-
           # Aggregate homework data only; no assignment-level evidence is returned.
+
           homework_skill_names = set()
+
           homework_total_points = 0.0
+
           homework_points_count = 0
+
           homework_file_count = 0
+
           homework_feedback_count = 0
+
           homework_subject_groups = defaultdict(lambda: {
+
               "total_assignments": 0,
+
               "assignments_with_file": 0,
+
               "with_teacher_feedback": 0,
+
               "total_points": 0.0,
+
               "points_count": 0,
+
               "skills": set()
+
           })
-
-
 
           for row in homework_rows:
 
-
-
                     subject_name = row["subject_name"] or "Other"
+
                     homework_group = homework_subject_groups[subject_name]
+
                     homework_group["total_assignments"] += 1
+
                     if row["solved_file"]:
+
                         homework_file_count += 1
+
                         homework_group["assignments_with_file"] += 1
+
                     if row["remarks"]:
+
                         homework_feedback_count += 1
+
                         homework_group["with_teacher_feedback"] += 1
+
                     points_value = safe_float(row["points"])
+
                     if points_value is not None:
+
                         homework_total_points += points_value
+
                         homework_points_count += 1
+
                         homework_group["total_points"] += points_value
+
                         homework_group["points_count"] += 1
-
-
 
                     task_text = " ".join([
 
@@ -1559,11 +1055,7 @@ def extract_skills_by_student_id(db, student_id):
 
                     ]).lower()
 
-
-
                     derived = map_subject_to_skills(subject_name)
-
-
 
                     if any(word in task_text for word in [
 
@@ -1581,8 +1073,6 @@ def extract_skills_by_student_id(db, student_id):
 
                               ])
 
-
-
                     if any(word in task_text for word in [
 
                               "essay", "letter", "story", "writing"
@@ -1596,8 +1086,6 @@ def extract_skills_by_student_id(db, student_id):
                                         "Creative Expression"
 
                               ])
-
-
 
                     if any(word in task_text for word in [
 
@@ -1613,73 +1101,64 @@ def extract_skills_by_student_id(db, student_id):
 
                               ])
 
-
-
                     derived = list(dict.fromkeys(derived))
 
-
-
                     # Keep only a compact internal marker for skill counts.
+
                     # Assignment titles, descriptions, IDs, remarks and timestamps
+
                     # are intentionally excluded from the returned JSON.
+
                     evidence = {"source": "homework"}
-
-
 
                     for skill_name in derived:
 
                               homework_skill_names.add(skill_name)
+
                               homework_group["skills"].add(skill_name)
 
-
-
-                              # No numeric skill score: points have no known maximum.
-
-                              add_evidence(
-
-                                        skill_map,
-
-                                        skill_name,
-
-                                        "Learning / Cognitive",
-
-                                        None,
-
-                                        "homework",
-
-                                        evidence
-
-                              )
-
-
+                              # Homework-derived skills remain in the homework
+                              # reporting profile and do not affect skill scores.
 
           homework_subject_profiles = []
+
           for subject_name, group in homework_subject_groups.items():
+
               homework_subject_profiles.append({
+
                   "subject": subject_name,
+
                   "total_assignments": group["total_assignments"],
+
                   "assignments_with_submission_file": group["assignments_with_file"],
+
                   "assignments_without_submission_file": (
+
                       group["total_assignments"] - group["assignments_with_file"]
+
                   ),
+
                   "with_teacher_feedback": group["with_teacher_feedback"],
+
                   "total_points": round_value(group["total_points"]),
+
                   "average_points": round_value(
+
                       group["total_points"] / group["points_count"]
+
                       if group["points_count"] else None
+
                   ),
+
                   "skills": sorted(group["skills"])
+
               })
-
-
 
           # -----------------------------------------------------
 
           # 5. CO-SCHOLASTIC ASSESSMENTS
 
           # -----------------------------------------------------
-
-
 
           co_rows = db.execute(text("""
 
@@ -1699,25 +1178,17 @@ def extract_skills_by_student_id(db, student_id):
 
                               sca.assessed_at
 
-
-
                     FROM student_co_scholastic_assessments sca
-
-
 
                     INNER JOIN co_scholastic_areas ca
 
                               ON ca.id = sca.area_id
-
-
 
                     WHERE sca.student_id = :student_id
 
                          AND sca.school_id = :school_id
 
                          AND ca.status = 1
-
-
 
                     ORDER BY sca.assessed_at ASC
 
@@ -1729,35 +1200,21 @@ def extract_skills_by_student_id(db, student_id):
 
           }).mappings().all()
 
-
-
           co_groups = defaultdict(list)
-
-
 
           for row in co_rows:
 
-
-
                     score = safe_float(row["score"])
-
-
 
                     if score is None:
 
                               score = parse_grade(row["grade"])
 
-
-
                     if score is None or not 0 <= score <= 100:
 
                               continue
 
-
-
                     area_name = row["area_name"] or "Unknown Area"
-
-
 
                     evidence = {
 
@@ -1779,8 +1236,6 @@ def extract_skills_by_student_id(db, student_id):
 
                     }
 
-
-
                     co_groups[row["area_id"]].append({
 
                               "score": score,
@@ -1790,8 +1245,6 @@ def extract_skills_by_student_id(db, student_id):
                               "evidence": evidence
 
                     })
-
-
 
                     for skill_name in map_co_scholastic_to_skills(area_name):
 
@@ -1811,15 +1264,9 @@ def extract_skills_by_student_id(db, student_id):
 
                               )
 
-
-
           co_profiles = []
 
-
-
           for area_id, records in co_groups.items():
-
-
 
                     co_profiles.append({
 
@@ -1837,15 +1284,11 @@ def extract_skills_by_student_id(db, student_id):
 
                     })
 
-
-
           # -----------------------------------------------------
 
           # 6. ATTENDANCE
 
           # -----------------------------------------------------
-
-
 
           attendance_rows = db.execute(text("""
 
@@ -1861,25 +1304,17 @@ def extract_skills_by_student_id(db, student_id):
 
                               a.subject_id
 
-
-
                     FROM attendance_marked am
-
-
 
                     INNER JOIN attendance a
 
                               ON a.id = am.attendance_id
-
-
 
                     WHERE am.student_id = :student_id
 
                          AND a.school_id = :school_id
 
                          AND (a.trash IS NULL OR a.trash = 0)
-
-
 
                     ORDER BY a.date ASC, a.period ASC
 
@@ -1890,8 +1325,6 @@ def extract_skills_by_student_id(db, student_id):
                     "school_id": school_id
 
           }).mappings().all()
-
-
 
           attendance = {
 
@@ -1905,23 +1338,15 @@ def extract_skills_by_student_id(db, student_id):
 
           }
 
-
-
           for row in attendance_rows:
 
                     status = str(row["status"]).lower()
-
-
 
                     if status in attendance:
 
                               attendance[status] += 1
 
-
-
           recognized = sum(attendance.values())
-
-
 
           # Late and leave are separately visible.
 
@@ -1939,8 +1364,6 @@ def extract_skills_by_student_id(db, student_id):
 
           )
 
-
-
           attendance_profile = {
 
                     "total_sessions": recognized,
@@ -1955,21 +1378,15 @@ def extract_skills_by_student_id(db, student_id):
 
           }
 
-
-
           # Attendance remains contextual evidence.
 
           # It is NOT added to professional skill scores.
-
-
 
           # -----------------------------------------------------
 
           # 7. ACHIEVEMENTS
 
           # -----------------------------------------------------
-
-
 
           achievement_rows = db.execute(text("""
 
@@ -1995,17 +1412,11 @@ def extract_skills_by_student_id(db, student_id):
 
                               a.awarding_body
 
-
-
                     FROM student_achievement sa
-
-
 
                     INNER JOIN achievements a
 
                               ON a.id = sa.achievement_id
-
-
 
                     WHERE sa.student_id = :student_id
 
@@ -2014,8 +1425,6 @@ def extract_skills_by_student_id(db, student_id):
                          AND a.school_id = :school_id
 
                          AND (a.trash IS NULL OR a.trash = 0)
-
-
 
                     ORDER BY sa.createdAt ASC
 
@@ -2027,63 +1436,95 @@ def extract_skills_by_student_id(db, student_id):
 
           }).mappings().all()
 
-
-
-          achievements = []  # Internal-only records used to build summary counts.
+          achievements = []  # Internal records used for summary counts.
           achievement_categories = defaultdict(int)
           achievement_levels = defaultdict(int)
           achievement_positions = defaultdict(int)
 
-
-
           for row in achievement_rows:
+                    level = str(row["level"] or "").strip().lower()
+                    position = str(row["position"] or "").strip().lower()
+
+                    level_weight = SKILL_CONFIG["achievement_level_weights"].get(
+                              level, 0.25
+                    )
+                    position_score = SKILL_CONFIG["achievement_position_scores"].get(
+                              position, 25
+                    )
+
+                    # Final achievement score combines achievement level and position.
+                    achievement_score = position_score * level_weight
 
                     achievements.append({
-
                               "achievement_id": row["achievement_id"],
-
                               "student_achievement_id": row["student_achievement_id"],
-
                               "title": row["title"],
-
                               "description": row["description"],
-
                               "category": row["category"],
-
                               "level": row["level"],
-
                               "position": row["position"],
-
                               "date": json_safe(row["date"]),
-
                               "awarding_body": row["awarding_body"],
-
                               "remarks": row["remarks"]
-
                     })
+
                     achievement_categories[str(row["category"] or "Uncategorized")] += 1
                     achievement_levels[str(row["level"] or "Unspecified")] += 1
                     achievement_positions[str(row["position"] or "Unspecified")] += 1
 
+                    derived_skills = map_achievement_to_skills(
+                              row["title"],
+                              row["description"],
+                              row["category"]
+                    )
 
+                    evidence = {
+                              "source": "achievements",
+                              "achievement_score": round_value(achievement_score),
+                              "level": row["level"],
+                              "position": row["position"],
+                              "achievement_date": row["date"]
+                    }
+
+                    for skill_name in derived_skills:
+                              add_evidence(
+                                        skill_map,
+                                        skill_name,
+                                        "Demonstrated Skills",
+                                        achievement_score,
+                                        "achievements",
+                                        evidence
+                              )
 
           achievement_summary = {
+
               "total_achievements": len(achievements),
+
               "by_category": [
+
                   {"category": key, "count": value}
+
                   for key, value in sorted(achievement_categories.items())
+
               ],
+
               "by_level": [
+
                   {"level": key, "count": value}
+
                   for key, value in sorted(achievement_levels.items())
+
               ],
+
               "by_position": [
+
                   {"position": key, "count": value}
+
                   for key, value in sorted(achievement_positions.items())
+
               ]
+
           }
-
-
 
           # -----------------------------------------------------
 
@@ -2091,27 +1532,15 @@ def extract_skills_by_student_id(db, student_id):
 
           # -----------------------------------------------------
 
-
-
           final_skills = []
-
-
 
           for skill_name, item in skill_map.items():
 
-
-
                     score = calculate_skill_score(item)
-
-
 
                     source_names = sorted(item["sources"])
 
-
-
                     observation_count = len(item["observations"])
-
-
 
                     # Confidence considers independent source diversity
 
@@ -2122,8 +1551,6 @@ def extract_skills_by_student_id(db, student_id):
                               x["source"] for x in item["observations"]
 
                     }
-
-
 
                     if observation_count >= 8 and len(scored_sources) >= 2:
 
@@ -2141,11 +1568,7 @@ def extract_skills_by_student_id(db, student_id):
 
                               skill_confidence = "insufficient_evidence"
 
-
-
                     scored_history = []
-
-
 
                     for evidence in item["evidence"]:
 
@@ -2159,8 +1582,6 @@ def extract_skills_by_student_id(db, student_id):
 
                               )
 
-
-
                               value = (
 
                                         evidence.get("percentage")
@@ -2171,8 +1592,6 @@ def extract_skills_by_student_id(db, student_id):
 
                               )
 
-
-
                               if value is not None and date is not None:
 
                                         scored_history.append({
@@ -2182,8 +1601,6 @@ def extract_skills_by_student_id(db, student_id):
                                                   "date": date
 
                                         })
-
-
 
                     # Avoid treating multiple evidence types as a single
 
@@ -2205,25 +1622,16 @@ def extract_skills_by_student_id(db, student_id):
 
                     ]
 
-
-
-                    competency_history = [
-
+                    achievement_history = [
                               {
-
-                                        "score": e["normalized_score"],
-
-                                        "date": e["assessed_at"]
-
+                                        "score": e["achievement_score"],
+                                        "date": e["achievement_date"]
                               }
-
                               for e in item["evidence"]
-
-                              if e["source"] == "competency_assessment"
-
+                              if e["source"] == "achievements"
+                              and e.get("achievement_score") is not None
+                              and e.get("achievement_date") is not None
                     ]
-
-
 
                     co_history = [
 
@@ -2241,27 +1649,15 @@ def extract_skills_by_student_id(db, student_id):
 
                     ]
 
-
-
                     trend_values = (
-
-                              academic_history
-
+                              achievement_history
+                              if achievement_history
+                              else academic_history
                               if academic_history
-
-                              else competency_history
-
-                              if competency_history
-
                               else co_history
-
                     )
 
-
-
                     trend = calculate_trend(trend_values)
-
-
 
                     if score is None:
 
@@ -2278,8 +1674,6 @@ def extract_skills_by_student_id(db, student_id):
                     else:
 
                               status = "needs_improvement"
-
-
 
                     final_skills.append({
 
@@ -2303,8 +1697,6 @@ def extract_skills_by_student_id(db, student_id):
 
                     })
 
-
-
           final_skills.sort(
 
                     key=lambda x: (
@@ -2319,134 +1711,204 @@ def extract_skills_by_student_id(db, student_id):
 
           )
 
-
-
           top_skills = final_skills[:10]
-
-
 
           # -----------------------------------------------------
 
           # 9. COMPACT RESPONSE - AGGREGATED DATA ONLY
+
           # No raw assessment evidence or homework evidence is returned.
+
           # -----------------------------------------------------
 
           academic_overall_percentage = (
+
               (academic_total_obtained / academic_total_maximum) * 100
+
               if academic_total_maximum > 0 else None
-          )
-          academic_weighted_average = (
-              academic_weighted_score_total / academic_total_weight
-              if academic_total_weight > 0 else None
+
           )
 
-          competency_valid_scores = [
-              record["score"]
-              for records in competency_groups.values()
-              for record in records
-          ]
-          co_scholastic_valid_scores = [
-              record["score"]
-              for records in co_groups.values()
-              for record in records
-          ]
-          competency_average = average(competency_valid_scores)
-          co_scholastic_average = average(co_scholastic_valid_scores)
-          academic_exam_averages = {
-              "main_public_exam": round_value(
-                  average(academic_category_scores["main_public_exam"])
-              ),
-              "other_exam_linked": round_value(
-                  average(academic_category_scores["other_exam_linked"])
-              ),
-              "normal_internal": round_value(
-                  average(academic_category_scores["normal_internal"])
-              )
-          }
-          homework_average_points = (
-              homework_total_points / homework_points_count
-              if homework_points_count else None
+          academic_weighted_average = (
+
+              academic_weighted_score_total / academic_total_weight
+
+              if academic_total_weight > 0 else None
+
           )
+
+          co_scholastic_valid_scores = [
+
+              record["score"]
+
+              for records in co_groups.values()
+
+              for record in records
+
+          ]
+
+          co_scholastic_average = average(co_scholastic_valid_scores)
+
+          academic_exam_averages = {
+
+              "main_public_exam": round_value(
+
+                  average(academic_category_scores["main_public_exam"])
+
+              ),
+
+              "other_exam_linked": round_value(
+
+                  average(academic_category_scores["other_exam_linked"])
+
+              ),
+
+              "normal_internal": round_value(
+
+                  average(academic_category_scores["normal_internal"])
+
+              )
+
+          }
+
+          homework_average_points = (
+
+              homework_total_points / homework_points_count
+
+              if homework_points_count else None
+
+          )
+
           attendance_percentage = attendance_profile["attendance_percentage"]
+
           overall_skill_score = average([
+
               item["score"] for item in final_skills
+
               if item["score"] is not None
+
           ])
 
           return {
+
               "success": True,
+
               "data": {
+
                   "profile_version": "6.0",
+
                   "generated_at": datetime.now(timezone.utc).isoformat(),
+
                   "student": {
+
                       "student_id": student["id"],
+
                       "student_name": student["full_name"],
+
                       "school_id": student["school_id"],
+
                       "class_id": student["class_id"],
+
                       "gender":student["gender"],
+
                       "date_of_birth": json_safe(student["date_of_birth"])
+
                   },
 
                   "overall_summary": {
+
                       "overall_academic_percentage": round_value(academic_overall_percentage),
+
                       "weighted_academic_average": round_value(academic_weighted_average),
+
                       "overall_skill_score": round_value(overall_skill_score),
-                      "competency_average": round_value(competency_average),
+
                       "co_scholastic_average": round_value(co_scholastic_average),
+
                       "homework_average_points": round_value(homework_average_points),
+
                       "attendance_percentage": round_value(attendance_percentage),
+
                       "total_skills_identified": len(final_skills),
+
                       "total_academic_assessments": len(academic_evidence),
-                      "total_competency_assessments": len(competency_rows),
+
                       "total_homework_assignments": len(homework_rows),
+
                       "total_co_scholastic_assessments": len(co_rows),
+
                       "total_attendance_sessions": attendance_profile["total_sessions"],
+
                       "total_achievements": len(achievements)
+
                   },
 
                   "skill_summary": {
+
                       "total_skills": len(final_skills),
+
                       "top_skills": top_skills,
+
                       "all_skills": final_skills
+
                   },
 
                   "academic_profile": {
-                      "total_assessments": len(academic_evidence),
-                      "total_obtained_marks": round_value(academic_total_obtained),
-                      "total_maximum_marks": round_value(academic_total_maximum),
-                      "overall_percentage": round_value(academic_overall_percentage),
-                      "weighted_average_percentage": round_value(academic_weighted_average),
-                      "main_exam_count": academic_counts["main_public_exam"],
-                      "other_exam_count": academic_counts["other_exam_linked"],
-                      "normal_internal_count": academic_counts["normal_internal"],
-                      "exam_type_averages": academic_exam_averages,
-                      "subjects": subject_profiles
-                  },
 
-                  "competency_profile": {
-                      "total_assessments": len(competency_rows),
-                      "valid_assessments": len(competency_valid_scores),
-                      "average_score": round_value(competency_average),
-                      "indicators": competency_profiles
+                      "total_assessments": len(academic_evidence),
+
+                      "total_obtained_marks": round_value(academic_total_obtained),
+
+                      "total_maximum_marks": round_value(academic_total_maximum),
+
+                      "overall_percentage": round_value(academic_overall_percentage),
+
+                      "weighted_average_percentage": round_value(academic_weighted_average),
+
+                      "main_exam_count": academic_counts["main_public_exam"],
+
+                      "other_exam_count": academic_counts["other_exam_linked"],
+
+                      "normal_internal_count": academic_counts["normal_internal"],
+
+                      "exam_type_averages": academic_exam_averages,
+
+                      "subjects": subject_profiles
+
                   },
 
                   "homework_profile": {
+
                       "total_assignments": len(homework_rows),
+
                       "assignments_with_submission_file": homework_file_count,
+
                       "assignments_without_submission_file": len(homework_rows) - homework_file_count,
+
                       "with_teacher_feedback": homework_feedback_count,
+
                       "total_points": round_value(homework_total_points),
+
                       "average_points": round_value(homework_average_points),
+
                       "derived_skills": sorted(homework_skill_names),
+
                       "subjects": homework_subject_profiles,
+
                       "points_note": "Points are shown as recorded. A percentage is not calculated because the maximum possible homework points are not available. File counts indicate uploaded files only; they do not determine whether offline work was submitted."
+
                   },
 
                   "co_scholastic_profile": {
+
                       "total_assessments": len(co_rows),
+
                       "valid_assessments": len(co_scholastic_valid_scores),
+
                       "average_score": round_value(co_scholastic_average),
+
                       "areas": co_profiles
+
                   },
 
                   "attendance_profile": attendance_profile,
@@ -2454,30 +1916,53 @@ def extract_skills_by_student_id(db, student_id):
                   "achievement_profile": achievement_summary,
 
                   "data_quality": {
+
                       "academic_records": len(academic_evidence),
-                      "competency_records": len(competency_rows),
+
                       "homework_records": len(homework_rows),
+
                       "attendance_records": len(attendance_rows),
+
                       "co_scholastic_records": len(co_rows),
+
                       "achievement_records": len(achievements),
+
                       "limitations": [
+
                           "Homework points have no known maximum score, so only total and average points are provided.",
+
                           "Attendance is a consistency indicator and is not included in professional skill scores.",
+
                           "Career interests and preferences are not available in these database tables.",
+
                           "Subject-to-skill mappings are inferred indicators, not direct skill examinations."
+
                       ]
+
                   },
 
                   "career_ai_input": {
+
                       "ready": True,
+
                       "purpose": "future_career_identification",
+
                       "instruction": (
-                          "Use the aggregated academic, competency, homework, co-scholastic, "
+
+                          "Use the aggregated academic, homework, co-scholastic, "
+
                           "attendance, achievement and skill summaries as evidence-based indicators. "
+
                           "Do not assume academic marks alone prove professional competence. "
+
                           "Consider age, interests, confidence and missing information before "
+
                           "suggesting exploratory career fields."
+
                       )
+
                   }
+
               }
+
           }

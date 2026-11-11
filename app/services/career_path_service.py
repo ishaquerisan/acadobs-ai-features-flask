@@ -1,5 +1,8 @@
+import json
+import os
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import text
 
 from app.services.ai_provider import get_ai_provider
 from app.services.student_skill_service import extract_skills_by_student_id
@@ -156,6 +159,130 @@ Rules:
 
 
 # =========================================================
+# DATABASE STORAGE HELPERS (MONTHLY CACHE PER STUDENT_ID)
+# =========================================================
+
+def ensure_career_path_table(db) -> None:
+    """
+    Ensures the `student_career_paths` table exists in the database
+    to store AI-generated career path JSON per student_id.
+    """
+    db.execute(text("""
+        CREATE TABLE IF NOT EXISTS student_career_paths (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            student_id INT NOT NULL UNIQUE,
+            school_id INT NULL,
+            career_data LONGTEXT NOT NULL,
+            generated_at DATETIME NOT NULL,
+            createdAt DATETIME NOT NULL,
+            updatedAt DATETIME NOT NULL,
+            INDEX idx_student_career_student_id (student_id)
+        )
+    """))
+    db.commit()
+
+
+def get_cached_career_path(db, student_id: int, cache_days: int = 30) -> dict | None:
+    """
+    Returns stored career path data from DB if a record for `student_id` exists
+    and was generated within the last `cache_days` (default: 30 days / 1 month).
+    Returns None if no record exists or if it is older than 1 month.
+    """
+    ensure_career_path_table(db)
+
+    row = db.execute(
+        text("""
+            SELECT
+                student_id,
+                career_data,
+                generated_at
+            FROM student_career_paths
+            WHERE student_id = :student_id
+            LIMIT 1
+        """),
+        {"student_id": student_id}
+    ).mappings().first()
+
+    if not row:
+        return None
+
+    generated_at = row["generated_at"]
+    if isinstance(generated_at, str):
+        try:
+            generated_at = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    if generated_at is None:
+        return None
+
+    # Normalize to UTC naive for comparison
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    if generated_at.tzinfo is not None:
+        generated_at_utc = generated_at.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        generated_at_utc = generated_at
+
+    # Check if the stored result is still within the monthly window (30 days)
+    if now_utc - generated_at_utc < timedelta(days=cache_days):
+        try:
+            return json.loads(row["career_data"])
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    return None
+
+
+def save_career_path_to_db(
+    db,
+    student_id: int,
+    school_id: int | None,
+    career_data: dict,
+    generated_at_dt: datetime
+) -> None:
+    """
+    Inserts or updates the student's AI career path output in `student_career_paths`.
+    """
+    ensure_career_path_table(db)
+
+    now_naive = generated_at_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    career_json_str = json.dumps(career_data, ensure_ascii=False)
+
+    db.execute(
+        text("""
+            INSERT INTO student_career_paths (
+                student_id,
+                school_id,
+                career_data,
+                generated_at,
+                createdAt,
+                updatedAt
+            ) VALUES (
+                :student_id,
+                :school_id,
+                :career_data,
+                :generated_at,
+                :now_ts,
+                :now_ts
+            )
+            ON DUPLICATE KEY UPDATE
+                school_id = VALUES(school_id),
+                career_data = VALUES(career_data),
+                generated_at = VALUES(generated_at),
+                updatedAt = VALUES(updatedAt)
+        """),
+        {
+            "student_id": student_id,
+            "school_id": school_id,
+            "career_data": career_json_str,
+            "generated_at": now_naive,
+            "now_ts": now_naive,
+        }
+    )
+    db.commit()
+
+
+# =========================================================
 # PRIVACY FILTER: REMOVE STUDENT NAME BEFORE SENDING TO AI
 # =========================================================
 
@@ -193,22 +320,44 @@ def generate_student_career_path_by_student_id(
     provider_override: str | None = None
 ) -> dict:
     """
-    1. Extracts student skills & academic profile using `extract_skills_by_student_id(db, student_id)`.
-    2. Strips `student_name` from the JSON payload so student identity is never sent to AI.
-    3. Sends the anonymized JSON payload to the configured AI provider
-       (Google Gemini API now; switchable to Local LLM via `AI_PROVIDER=local` in `.env`).
-    4. Returns the student's personalized career path and Top 10 best-fit job listings.
+    1. Checks the `student_career_paths` DB table first for `student_id`.
+       If a stored output exists from within the last 30 days (1 month),
+       returns the stored DB data immediately WITHOUT calling the LLM.
+    2. Otherwise, extracts student skills via `extract_skills_by_student_id(db, student_id)`.
+    3. Strips `student_name` from the JSON payload so student identity is never sent to AI.
+    4. Calls the configured AI provider (Gemini API now; Local LLM in future),
+       stores the output in `student_career_paths`, and returns the result.
     """
-    # 1. Get the student skill profile JSON from extract_skills_by_student_id
-    skill_result = extract_skills_by_student_id(db, student_id)
+    try:
+        student_id = int(student_id)
+    except (ValueError, TypeError):
+        raise ValueError("Valid student_id is required")
 
-    # 2. Prepare anonymized payload for AI (without student_name)
+    if student_id <= 0:
+        raise ValueError("Valid student_id is required")
+
+    cache_days = int(os.getenv("CAREER_CACHE_DAYS", "30"))
+
+    # 1. Check DB first: if generated within the last 30 days (monthly once), return from DB without calling LLM
+    cached_data = get_cached_career_path(db, student_id, cache_days=cache_days)
+    if cached_data is not None:
+        return {
+            "success": True,
+            "data": cached_data
+        }
+
+    # 2. Not in DB (or older than 1 month): extract student skill profile JSON
+    skill_result = extract_skills_by_student_id(db, student_id)
+    skill_data = skill_result.get("data", {})
+    school_id = skill_data.get("student", {}).get("school_id")
+
+    # 3. Prepare anonymized payload for AI (without student_name)
     ai_input_payload = prepare_anonymized_skill_data_for_ai(skill_result)
 
-    # 3. Get active AI provider (Gemini by default, Local LLM in future)
+    # 4. Get active AI provider (Gemini by default, Local LLM in future)
     ai_provider = get_ai_provider(provider_override=provider_override)
 
-    # 4. Generate career path & 10 job recommendations via AI
+    # 5. Generate career path & 10 job recommendations via AI
     ai_output = ai_provider.generate_json(
         system_prompt=CAREER_SYSTEM_PROMPT,
         user_payload=ai_input_payload,
@@ -217,15 +366,26 @@ def generate_student_career_path_by_student_id(
 
     top_10_jobs = ai_output.get("top_10_jobs", [])[:10]
     career_path = ai_output.get("career_path", {})
+    generated_now = datetime.now(timezone.utc)
+
+    career_data = {
+        "student_id": student_id,
+        "generated_at": generated_now.isoformat(),
+        "career_path": career_path,
+        "jobs_count": len(top_10_jobs),
+        "top_10_jobs": top_10_jobs
+    }
+
+    # 6. Store output in database for this student_id so repeat calls within the month return from DB
+    save_career_path_to_db(
+        db=db,
+        student_id=student_id,
+        school_id=school_id,
+        career_data=career_data,
+        generated_at_dt=generated_now,
+    )
 
     return {
         "success": True,
-        "data": {
-            "student_id": student_id,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "career_path": career_path,
-            "jobs_count": len(top_10_jobs),
-            "top_10_jobs": top_10_jobs
-        }
+        "data": career_data
     }
-
