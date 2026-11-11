@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dotenv import load_dotenv
@@ -14,8 +15,7 @@ load_dotenv(override=True)
 class BaseAIProvider(ABC):
     """
     Abstract base class for AI/LLM providers.
-    Allows seamless switching between Google Gemini API now
-    and a Local LLM (Ollama, vLLM, LM Studio, llama.cpp) in the future.
+    Supports Local LLM (Ollama, LM Studio, vLLM, llama.cpp) and Google Gemini API.
     """
 
     @property
@@ -38,7 +38,8 @@ class BaseAIProvider(ABC):
 
 def _extract_json_from_text(raw_text: str) -> dict:
     """
-    Safely parse JSON from model text output, handling markdown code fences if present.
+    Safely parse JSON from model text output, handling markdown code fences
+    and minor trailing-comma quirks from smaller local models.
     """
     if not raw_text:
         raise ValueError("Empty response received from AI model")
@@ -50,15 +51,25 @@ def _extract_json_from_text(raw_text: str) -> dict:
     if fence_match:
         cleaned = fence_match.group(1).strip()
 
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Try locating the first '{' and last '}'
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start : end + 1])
-        raise ValueError("AI model did not return valid JSON")
+    for candidate in (
+        cleaned,
+        cleaned[cleaned.find("{") : cleaned.rfind("}") + 1]
+        if ("{" in cleaned and "}" in cleaned)
+        else cleaned,
+    ):
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            # Remove trailing commas before } or ] (common in smaller 3B local models)
+            fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+            try:
+                return json.loads(fixed)
+            except json.JSONDecodeError:
+                continue
+
+    raise ValueError("AI model did not return valid JSON")
 
 
 def _normalize_model_id(model_name: str) -> str:
@@ -69,6 +80,25 @@ def _normalize_model_id(model_name: str) -> str:
     if cleaned.startswith("models/"):
         cleaned = cleaned[len("models/"):]
     return cleaned
+
+
+def _normalize_local_llm_url(raw_url: str) -> str:
+    """
+    Normalize LOCAL_LLM_URL so values like:
+      - http://localhost:11434/v1       -> http://localhost:11434/v1/chat/completions
+      - http://localhost:11434          -> http://localhost:11434/v1/chat/completions
+      - http://localhost:11434/api/chat -> http://localhost:11434/api/chat
+    all work automatically out of the box.
+    """
+    url = (raw_url or "http://localhost:11434/v1/chat/completions").strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+
+    if path == "" or path == "/":
+        return f"{url}/v1/chat/completions"
+    if path == "/v1":
+        return f"{url}/chat/completions"
+    return url
 
 
 class GeminiAIProvider(BaseAIProvider):
@@ -110,10 +140,6 @@ class GeminiAIProvider(BaseAIProvider):
         return self._model
 
     def _discover_available_models(self) -> list[str]:
-        """
-        Query the Gemini ListModels endpoint to find models available to this API key
-        that support `generateContent`.
-        """
         list_url = f"{self.base_url}/models?key={self.api_key}"
         req = urllib.request.Request(list_url, method="GET")
         try:
@@ -155,8 +181,6 @@ class GeminiAIProvider(BaseAIProvider):
     ) -> dict:
         url = f"{self.base_url}/models/{model_id}:generateContent?key={self.api_key}"
 
-        # Use responseMimeType="application/json" without heavy responseSchema grammar compilation
-        # so Gemini responds in a few seconds instead of timing out.
         generation_config: dict = {
             "temperature": float(os.getenv("AI_TEMPERATURE", "0.3")),
             "responseMimeType": "application/json",
@@ -206,7 +230,7 @@ class GeminiAIProvider(BaseAIProvider):
     ) -> dict:
         if not self.api_key:
             raise ValueError(
-                "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in your .env file."
+                "GEMINI_API_KEY is not configured. Please set GEMINI_API_KEY in your .env file or set AI_PROVIDER=local."
             )
 
         models_to_try = [self._model]
@@ -234,7 +258,6 @@ class GeminiAIProvider(BaseAIProvider):
                 err_body = http_err.read().decode("utf-8", errors="replace")
                 last_error = (http_err.code, err_body, http_err)
 
-                # If model does not support thinkingConfig (HTTP 400), retry immediately without thinkingConfig
                 if http_err.code == 400 and "thinking" in err_body.lower():
                     try:
                         response_data = self._call_generate_content(
@@ -254,7 +277,6 @@ class GeminiAIProvider(BaseAIProvider):
                         last_error = ("TIMEOUT", str(timeout_err), timeout_err)
                         continue
 
-                # If HTTP 404 (model deprecated / unavailable to new users), extract suggested model & discover available models
                 if http_err.code == 404:
                     suggested_matches = re.findall(
                         r"models/([a-zA-Z0-9._-]+)", err_body
@@ -318,7 +340,6 @@ class GeminiAIProvider(BaseAIProvider):
             raise RuntimeError(f"Gemini API returned no candidates: {response_data}")
 
         parts = candidates[0].get("content", {}).get("parts") or []
-        # Find the part containing JSON text (skipping any thought parts if present)
         text_content = None
         for part in reversed(parts):
             if "text" in part and not part.get("thought", False):
@@ -335,13 +356,14 @@ class GeminiAIProvider(BaseAIProvider):
 
 class LocalLLMProvider(BaseAIProvider):
     """
-    Local LLM provider for future migration (supports Ollama, LM Studio, vLLM, llama.cpp,
-    or any OpenAI-compatible local endpoint).
+    Local LLM provider supporting Ollama, LM Studio, vLLM, llama.cpp,
+    or any OpenAI-compatible local endpoint.
 
-    Switch to this provider anytime by setting in .env:
+    Configured via .env:
         AI_PROVIDER=local
-        LOCAL_LLM_URL=http://localhost:11434/v1/chat/completions  (or http://localhost:11434/api/generate)
-        LOCAL_LLM_MODEL=llama3.1
+        LOCAL_LLM_URL=http://localhost:11434/v1
+        LOCAL_LLM_MODEL=llama3.2:3b
+        LOCAL_LLM_API_KEY=ollama
     """
 
     def __init__(
@@ -349,18 +371,19 @@ class LocalLLMProvider(BaseAIProvider):
         endpoint_url: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
-        timeout: int = 180,
+        timeout: int = 300,
     ):
         load_dotenv(override=True)
-        self.endpoint_url = (
+        raw_url = (
             endpoint_url
             or os.getenv("LOCAL_LLM_URL")
             or "http://localhost:11434/v1/chat/completions"
-        ).strip()
+        )
+        self.endpoint_url = _normalize_local_llm_url(raw_url)
         self._model = (
-            model or os.getenv("LOCAL_LLM_MODEL") or "llama3.1"
+            model or os.getenv("LOCAL_LLM_MODEL") or "llama3.2:3b"
         ).strip()
-        self.api_key = (api_key or os.getenv("LOCAL_LLM_API_KEY") or "").strip()
+        self.api_key = (api_key or os.getenv("LOCAL_LLM_API_KEY") or "ollama").strip()
         self.timeout = int(os.getenv("AI_TIMEOUT_SECONDS", str(timeout)))
 
     @property
@@ -371,6 +394,45 @@ class LocalLLMProvider(BaseAIProvider):
     def model_name(self) -> str:
         return self._model
 
+    def _build_request_body(self, target_url: str, system_prompt: str, user_message: str, temperature: float) -> dict:
+        if "/api/generate" in target_url:
+            return {
+                "model": self._model,
+                "system": system_prompt,
+                "prompt": user_message,
+                "format": "json",
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_ctx": 8192,
+                },
+            }
+        if "/api/chat" in target_url:
+            return {
+                "model": self._model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "format": "json",
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_ctx": 8192,
+                },
+            }
+        # OpenAI-compatible endpoint (/v1/chat/completions)
+        return {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": temperature,
+            "max_tokens": 4096,
+            "response_format": {"type": "json_object"},
+        }
+
     def generate_json(
         self,
         system_prompt: str,
@@ -380,7 +442,7 @@ class LocalLLMProvider(BaseAIProvider):
         compact_json = json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
         user_message = (
             "Analyze the following anonymized student skill profile JSON "
-            "and return ONLY valid JSON matching the required career path and 10 jobs schema:\n"
+            "and return ONLY valid JSON with `career_path` and `top_10_jobs` (10 job items):\n"
             + compact_json
         )
 
@@ -390,61 +452,58 @@ class LocalLLMProvider(BaseAIProvider):
 
         temperature = float(os.getenv("AI_TEMPERATURE", "0.3"))
 
-        if "/api/generate" in self.endpoint_url:
-            request_body = {
-                "model": self._model,
-                "system": system_prompt,
-                "prompt": user_message,
-                "format": "json",
-                "stream": False,
-                "options": {"temperature": temperature},
-            }
-        elif "/api/chat" in self.endpoint_url:
-            request_body = {
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                "format": "json",
-                "stream": False,
-                "options": {"temperature": temperature},
-            }
-        else:
-            request_body = {
-                "model": self._model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                "temperature": temperature,
-                "response_format": {"type": "json_object"},
-            }
+        # Try primary normalized URL; if /v1/chat/completions returns 404, also try Ollama native /api/chat
+        parsed = urllib.parse.urlparse(self.endpoint_url)
+        base_host = f"{parsed.scheme}://{parsed.netloc}"
+        candidate_urls = [self.endpoint_url]
+        ollama_chat_url = f"{base_host}/api/chat"
+        if ollama_chat_url not in candidate_urls:
+            candidate_urls.append(ollama_chat_url)
 
-        data_bytes = json.dumps(request_body).encode("utf-8")
-        req = urllib.request.Request(
-            self.endpoint_url,
-            data=data_bytes,
-            headers=headers,
-            method="POST",
-        )
+        response_data = None
+        last_error = None
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                response_data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as http_err:
-            err_body = http_err.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Local LLM HTTP {http_err.code} error: {err_body}"
-            ) from http_err
-        except (TimeoutError, socket.timeout) as timeout_err:
-            raise RuntimeError(
-                f"Local LLM request timed out after {self.timeout}s at {self.endpoint_url}"
-            ) from timeout_err
-        except urllib.error.URLError as url_err:
-            raise RuntimeError(
-                f"Failed to connect to Local LLM at {self.endpoint_url}: {url_err.reason}"
-            ) from url_err
+        for target_url in candidate_urls:
+            request_body = self._build_request_body(
+                target_url=target_url,
+                system_prompt=system_prompt,
+                user_message=user_message,
+                temperature=temperature,
+            )
+            data_bytes = json.dumps(request_body).encode("utf-8")
+            req = urllib.request.Request(
+                target_url,
+                data=data_bytes,
+                headers=headers,
+                method="POST",
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    response_data = json.loads(resp.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as http_err:
+                err_body = http_err.read().decode("utf-8", errors="replace")
+                last_error = (
+                    f"Local LLM HTTP {http_err.code} error at {target_url}: {err_body}",
+                    http_err,
+                )
+                if http_err.code == 404 and target_url != candidate_urls[-1]:
+                    continue
+                raise RuntimeError(last_error[0]) from http_err
+            except (TimeoutError, socket.timeout) as timeout_err:
+                raise RuntimeError(
+                    f"Local LLM request timed out after {self.timeout}s at {target_url} (model: {self._model})"
+                ) from timeout_err
+            except urllib.error.URLError as url_err:
+                raise RuntimeError(
+                    f"Failed to connect to Local LLM at {target_url}. Ensure Ollama/Local LLM server is running: {url_err.reason}"
+                ) from url_err
+
+        if response_data is None:
+            if last_error:
+                raise RuntimeError(last_error[0]) from last_error[1]
+            raise RuntimeError("Local LLM failed to return a response")
 
         if "choices" in response_data and response_data["choices"]:
             text_output = (
@@ -466,13 +525,20 @@ def get_ai_provider(provider_override: str | None = None) -> BaseAIProvider:
     """
     Factory function returning the configured AI provider.
     Controlled by AI_PROVIDER in .env:
-      - 'gemini' (default): Uses Google Gemini API
-      - 'local' / 'ollama' / 'local_llm': Uses Local LLM endpoint
+      - 'local' / 'ollama' / 'local_llm': Uses Local LLM endpoint (default if GEMINI_API_KEY is unset)
+      - 'gemini': Uses Google Gemini API
     """
     load_dotenv(override=True)
-    provider = (provider_override or os.getenv("AI_PROVIDER") or "gemini").strip().lower()
+    provider = (provider_override or os.getenv("AI_PROVIDER") or "").strip().lower()
 
     if provider in ("local", "local_llm", "ollama", "vllm", "lmstudio"):
+        return LocalLLMProvider()
+
+    if provider == "gemini" and (os.getenv("GEMINI_API_KEY") or "").strip():
+        return GeminiAIProvider()
+
+    # If GEMINI_API_KEY is commented out or empty, automatically use Local LLM
+    if not (os.getenv("GEMINI_API_KEY") or "").strip():
         return LocalLLMProvider()
 
     return GeminiAIProvider()
