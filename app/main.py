@@ -1,14 +1,29 @@
 
+from contextlib import asynccontextmanager
 import os
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import student_skills
 from app.routers import academic_performance
+from app.routers import student_performance
+from app.routers import student_skills
+from app.services.performance_scoring.scheduler import (
+    shutdown_performance_scheduler,
+    start_performance_scheduler,
+)
 
 load_dotenv()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    start_performance_scheduler()
+    try:
+        yield
+    finally:
+        shutdown_performance_scheduler()
 
 
 def _parse_csv_env(name: str, default: str) -> list[str]:
@@ -27,8 +42,9 @@ cors_allow_credentials = (
 
 app = FastAPI(
     title="Acadobs AI Engine",
-    description="Student Skill Extraction and Academic Analytics",
-    version="1.0.0"
+    description="Student Skill Extraction, Academic Analytics, and Monthly Performance Scoring",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -42,6 +58,7 @@ app.add_middleware(
 
 app.include_router(student_skills.router)
 app.include_router(academic_performance.router)
+app.include_router(student_performance.router)
 
 
 @app.get("/")
